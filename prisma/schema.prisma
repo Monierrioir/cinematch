@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model UserSession {
+  id              String                   @id @default(cuid())
+  createdAt       DateTime                 @default(now())
+  userId          String?
+  user            User?                    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  selectedMovies  SelectedMoviePreference[]
+  recommendations RecommendationSnapshot[]
+}
+
+model SelectedMoviePreference {
+  id         String      @id @default(cuid())
+  movieId    Int
+  title      String
+  genreIds   Int[]
+  sessionId  String
+  session    UserSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt  DateTime    @default(now())
+}
+
+model RecommendationSnapshot {
+  id             String      @id @default(cuid())
+  movieId        Int
+  title          String
+  whyRecommended String
+  score          Float
+  sessionId      String
+  session        UserSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt      DateTime    @default(now())
+}
+
+model User {
+  id             String        @id @default(cuid())
+  email          String        @unique
+  name           String?
+  passwordHash   String
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  sessions       UserSession[]
+  profile        UserProfile?
+}
+
+model UserProfile {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  preferredMediaType String?
+  favoriteGenreIds   Int[]    @default([])
+  preferredLanguage  String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
