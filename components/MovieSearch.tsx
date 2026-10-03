@@ -73,7 +73,8 @@ export default function MovieSearch({
         title: movie.title,
         genreIds: movie.genreIds,
         posterPath: movie.posterPath,
-        releaseYear: movie.releaseDate?.slice(0, 4) ?? "Unknown year"
+        releaseYear: movie.releaseDate?.slice(0, 4) ?? "Unknown year",
+        mediaType: "movie"
       }
     ]);
   };

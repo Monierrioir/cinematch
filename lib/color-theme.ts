@@ -112,7 +112,7 @@ async function extractPaletteColors(url: string): Promise<Rgb[]> {
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
         if (!context) {
-          resolve(null);
+          resolve([]);
           return;
         }
 
