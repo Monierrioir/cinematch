@@ -19,7 +19,7 @@ import { z } from "zod";
 
 type RecommendationRequestBody =
   | SelectedMovie[]
-  | { selectedMovies?: SelectedMovie[]; sessionTasteProfile?: SessionTasteProfile | null; debug?: boolean };
+  | { selectedMovies?: SelectedMovie[]; sessionTasteProfile?: unknown; debug?: boolean };
 
 type JsonResponse = {
   recommendations: unknown[];
