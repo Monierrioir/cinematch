@@ -22,6 +22,8 @@ export async function GET(request: NextRequest) {
         posterPath: movie.poster_path,
         releaseDate: movie.release_date,
         voteAverage: movie.vote_average,
+        popularity: movie.popularity,
+        originalLanguage: movie.original_language ?? null,
         genreIds: movie.genre_ids ?? []
       }))
     });

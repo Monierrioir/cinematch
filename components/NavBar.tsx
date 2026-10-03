@@ -31,6 +31,12 @@ export default function NavBar() {
           <Link href="/recommend" className="app-nav-link">
             Recommend
           </Link>
+          <Link href="/profile" className="app-nav-link">
+            Profile
+          </Link>
+          <Link href="/recap" className="app-nav-link">
+            Recap
+          </Link>
           {status !== "loading" &&
             (session?.user ? (
               <button

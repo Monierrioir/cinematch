@@ -5,7 +5,12 @@ import { useEffect, useMemo, useState } from "react";
 import MediaDetailsModal from "@/components/MediaDetailsModal";
 import RecommendationCard from "@/components/RecommendationCard";
 import RevealSection from "@/components/RevealSection";
-import { CINEMATCH_SELECTED_MOVIES_KEY, parseSelectedMovies } from "@/lib/storage";
+import {
+  CINEMATCH_SELECTED_MOVIES_KEY,
+  getSessionTasteProfile,
+  parseSelectedMovies,
+  trackTasteProfileEvent
+} from "@/lib/storage";
 import type { RecommendedMovie, SelectedMovie, TrendingMovie } from "@/lib/types";
 
 function pickTasteTags(items: RecommendedMovie[]): string[] {
@@ -76,11 +81,13 @@ export default function RecommendationsPage() {
   const [isFallbackMode, setIsFallbackMode] = useState(false);
   const [fallbackNotice, setFallbackNotice] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
+  const [recommendationContext, setRecommendationContext] = useState<string | null>(null);
   const [activeDetails, setActiveDetails] = useState<{
     id: number;
     mediaType: RecommendedMovie["mediaType"];
     whyRecommended?: string;
   } | null>(null);
+  const [tasteExplanation, setTasteExplanation] = useState<string | null>(null);
   const personalizedLine = useMemo(
     () => buildPersonalizedLine(selectedMovies, items),
     [items, selectedMovies]
@@ -141,7 +148,8 @@ export default function RecommendationsPage() {
             popularity: movie.popularity,
             voteAverage: movie.voteAverage,
             recommendationScore: Number((movie.voteAverage * 10).toFixed(2)),
-            whyRecommended: "Popular pick based on what audiences are watching right now."
+            whyRecommended: "Popular pick based on what audiences are watching right now.",
+            recommendationBadges: ["Popular Pick"]
           }));
         } catch (fallbackError) {
           console.error("[recommendations] fallback request exception:", fallbackError);
@@ -154,13 +162,18 @@ export default function RecommendationsPage() {
         setError(null);
         setIsFallbackMode(false);
         setFallbackNotice(null);
+        setTasteExplanation(null);
+        setRecommendationContext(null);
 
         const response = await fetch("/api/recommend", {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
           },
-          body: JSON.stringify(selectedMovies)
+          body: JSON.stringify({
+            selectedMovies,
+            sessionTasteProfile: getSessionTasteProfile()
+          })
         });
 
         const rawBody = await response.text();
@@ -179,6 +192,8 @@ export default function RecommendationsPage() {
           recommendations?: RecommendedMovie[];
           fallbackUsed?: boolean;
           fallbackMessage?: string;
+          tasteExplanation?: string | null;
+          recommendationContext?: string;
         } = {};
         try {
           data = rawBody ? (JSON.parse(rawBody) as { recommendations?: RecommendedMovie[] }) : {};
@@ -188,14 +203,29 @@ export default function RecommendationsPage() {
 
         setItems(Array.isArray(data.recommendations) ? data.recommendations : []);
         setIsFallbackMode(Boolean(data.fallbackUsed));
-        setFallbackNotice(data.fallbackUsed ? data.fallbackMessage ?? "Showing popular picks instead" : null);
+        setFallbackNotice(
+          data.fallbackUsed
+            ? data.fallbackMessage ?? "Direct recommendations were limited, so we expanded using similar genre and mood."
+            : null
+        );
+        setTasteExplanation(data.tasteExplanation ?? null);
+        setRecommendationContext(data.recommendationContext ?? null);
+        console.info("[recommendations-debug]", {
+          selectedSeed: selectedMovies[0],
+          recommendationCount: Array.isArray(data.recommendations) ? data.recommendations.length : 0,
+          fallbackUsed: Boolean(data.fallbackUsed),
+          fallbackMessage: data.fallbackMessage ?? null,
+          recommendationContext: data.recommendationContext ?? null
+        });
       } catch (requestError) {
         console.error("[recommendations] failed to load recommendations:", requestError);
         const fallbackRecommendations = await fetchFallbackRecommendations();
         if (fallbackRecommendations.length > 0) {
           setItems(fallbackRecommendations);
           setIsFallbackMode(true);
-          setFallbackNotice("Showing popular picks instead");
+          setFallbackNotice("The recommendation service was temporarily unavailable, so we expanded to broader quality picks.");
+          setTasteExplanation(null);
+          setRecommendationContext("Temporary fallback: curated quality picks related to your selection.");
           setError(null);
         } else {
           setError("We couldn't load recommendations right now");
@@ -233,6 +263,12 @@ export default function RecommendationsPage() {
             )}
             {!isLoading && !error && items.length > 0 && (
               <p className="mt-2 text-sm text-brand-500/95">{personalizedLine}</p>
+            )}
+            {!isLoading && !error && items.length > 0 && recommendationContext && (
+              <p className="mt-2 text-sm text-slate-300">{recommendationContext}</p>
+            )}
+            {!isLoading && !error && tasteExplanation && (
+              <p className="mt-2 text-sm text-slate-300">{tasteExplanation}</p>
             )}
           </div>
           <Link href="/recommend" className="btn-secondary">
@@ -289,7 +325,7 @@ export default function RecommendationsPage() {
                   <h2 className="section-title text-3xl">{topPicksTitle}</h2>
                 </div>
                 <p className="text-xs uppercase tracking-[0.12em] text-slate-400">
-                  {isFallbackMode ? "Trending right now" : "Ranked by your taste profile"}
+                  {isFallbackMode ? "Expanded from seed with graceful fallback" : "Ranked from your selected seed"}
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
@@ -298,11 +334,20 @@ export default function RecommendationsPage() {
                     key={movie.id}
                     movie={movie}
                     onViewDetails={(currentMovie) =>
-                      setActiveDetails({
-                        id: currentMovie.id,
-                        mediaType: currentMovie.mediaType,
-                        whyRecommended: currentMovie.whyRecommended
-                      })
+                      {
+                        trackTasteProfileEvent({
+                          type: "open",
+                          mediaType: currentMovie.mediaType,
+                          releaseYear: currentMovie.releaseYear,
+                          voteAverage: currentMovie.voteAverage,
+                          popularity: currentMovie.popularity
+                        });
+                        setActiveDetails({
+                          id: currentMovie.id,
+                          mediaType: currentMovie.mediaType,
+                          whyRecommended: currentMovie.whyRecommended
+                        });
+                      }
                     }
                   />
                 ))}
@@ -325,11 +370,20 @@ export default function RecommendationsPage() {
                       <RecommendationCard
                         movie={movie}
                         onViewDetails={(currentMovie) =>
-                          setActiveDetails({
-                            id: currentMovie.id,
-                            mediaType: currentMovie.mediaType,
-                            whyRecommended: currentMovie.whyRecommended
-                          })
+                          {
+                            trackTasteProfileEvent({
+                              type: "open",
+                              mediaType: currentMovie.mediaType,
+                              releaseYear: currentMovie.releaseYear,
+                              voteAverage: currentMovie.voteAverage,
+                              popularity: currentMovie.popularity
+                            });
+                            setActiveDetails({
+                              id: currentMovie.id,
+                              mediaType: currentMovie.mediaType,
+                              whyRecommended: currentMovie.whyRecommended
+                            });
+                          }
                         }
                       />
                     </div>

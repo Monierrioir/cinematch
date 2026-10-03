@@ -31,7 +31,15 @@ async function tmdbFetch<T>(path: string, query: Record<string, string> = {}): P
   });
 
   if (!response.ok) {
-    console.error(`[TMDB] Error ${response.status} on ${path}`);
+    let rawErrorBody = "";
+    try {
+      rawErrorBody = await response.text();
+    } catch {
+      rawErrorBody = "";
+    }
+    console.error(
+      `[TMDB] Error status=${response.status} path=${path} raw=${rawErrorBody.slice(0, 220)}`
+    );
     throw new Error(`TMDb request failed (${response.status}) for path: ${path}`);
   }
 
@@ -260,6 +268,38 @@ export async function getRecommendationCandidatesByMediaType(
   return mediaType === "tv"
     ? getTvRecommendationCandidates(genreIds, preferredLanguage, pageCount)
     : getMovieRecommendationCandidates(genreIds, preferredLanguage, pageCount);
+}
+
+export async function fetchDirectRecommendations(
+  mediaType: MediaType,
+  itemId: number,
+  pageCount = 2
+): Promise<TmdbMovie[]> {
+  const candidates: TmdbMovie[] = [];
+  for (let page = 1; page <= pageCount; page += 1) {
+    const data = await tmdbFetch<TmdbListResponse>(`/${mediaType}/${itemId}/recommendations`, {
+      page: page.toString(),
+      include_adult: "false"
+    });
+    candidates.push(...data.results.map((item) => normalizeMediaListItem(item, mediaType)));
+  }
+  return candidates;
+}
+
+export async function fetchSimilarTitles(
+  mediaType: MediaType,
+  itemId: number,
+  pageCount = 2
+): Promise<TmdbMovie[]> {
+  const candidates: TmdbMovie[] = [];
+  for (let page = 1; page <= pageCount; page += 1) {
+    const data = await tmdbFetch<TmdbListResponse>(`/${mediaType}/${itemId}/similar`, {
+      page: page.toString(),
+      include_adult: "false"
+    });
+    candidates.push(...data.results.map((item) => normalizeMediaListItem(item, mediaType)));
+  }
+  return candidates;
 }
 
 export async function getNowPlayingMovies(page = 1): Promise<TmdbMovie[]> {

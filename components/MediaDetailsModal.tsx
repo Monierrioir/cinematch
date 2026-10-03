@@ -2,7 +2,9 @@
 
 import Image from "next/image";
 import { useEffect, useState } from "react";
+import { usePersonalTracker } from "@/hooks/usePersonalTracker";
 import { getBackdropUrl, getPosterUrl } from "@/lib/image";
+import type { TrackableTitleInput } from "@/lib/personal-tracker";
 import type { MediaType } from "@/lib/types";
 
 type ActiveDetail = {
@@ -31,9 +33,12 @@ type ModalDetails = {
   posterPath: string | null;
   backdropPath: string | null;
   overview: string;
+  releaseDate: string;
   year: string;
   genres: string[];
+  genreIds: number[];
   rating: number;
+  popularity: number;
   originalLanguage: string;
   runtimeText: string | null;
   episodeCount: string | null;
@@ -71,6 +76,19 @@ export default function MediaDetailsModal({ detail, onClose }: MediaDetailsModal
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<ModalDetails | null>(null);
+  const [watchedDate, setWatchedDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [listId, setListId] = useState<string>("");
+  const [newListName, setNewListName] = useState("");
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const {
+    store,
+    markWatched,
+    removeWatched,
+    setRating,
+    toggleInWatchlist,
+    createList,
+    addItemToList
+  } = usePersonalTracker();
 
   useEffect(() => {
     if (!detail) {
@@ -114,6 +132,10 @@ export default function MediaDetailsModal({ detail, onClose }: MediaDetailsModal
   }, [detail]);
 
   useEffect(() => {
+    setActionMessage(null);
+  }, [detail?.id, detail?.mediaType]);
+
+  useEffect(() => {
     if (!shouldRender) return;
     const previous = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -132,6 +154,25 @@ export default function MediaDetailsModal({ detail, onClose }: MediaDetailsModal
   }, [onClose, shouldRender]);
 
   if (!shouldRender) return null;
+
+  const trackedTitle: TrackableTitleInput | null = data
+    ? {
+        id: data.id,
+        mediaType: data.mediaType,
+        title: data.title,
+        posterPath: data.posterPath,
+        genres: data.genres,
+        genreIds: data.genreIds,
+        releaseDate: data.releaseDate,
+        popularity: data.popularity,
+        voteAverage: data.rating,
+        originalLanguage: data.originalLanguage
+      }
+    : null;
+  const trackedKey = trackedTitle ? `${trackedTitle.mediaType}:${trackedTitle.id}` : null;
+  const watchedRecord = trackedKey ? store?.watched[trackedKey] : undefined;
+  const watchlistRecord = trackedKey ? store?.watchlist[trackedKey] : undefined;
+  const currentRating = trackedKey ? store?.ratings[trackedKey] : undefined;
 
   return (
     <div className="fixed inset-0 z-[90] flex items-end justify-center p-0 md:items-center md:p-6">
@@ -216,6 +257,149 @@ export default function MediaDetailsModal({ detail, onClose }: MediaDetailsModal
               </div>
 
               <section className="grid gap-4 md:grid-cols-2">
+                <article className="surface-card space-y-3 p-4 md:col-span-2">
+                  <p className="text-xs uppercase tracking-[0.13em] text-brand-500">Track This Title</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="date"
+                      value={watchedDate}
+                      onChange={(event) => setWatchedDate(event.target.value)}
+                      className="rounded-lg border border-slate-700/70 bg-slate-900/70 px-2.5 py-1.5 text-xs text-slate-200 outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!trackedTitle) return;
+                        markWatched(trackedTitle, {
+                          watchedDate,
+                          rewatch: Boolean(watchedRecord)
+                        });
+                        setActionMessage(
+                          watchedRecord ? "Rewatch recorded in your journal." : "Marked as watched."
+                        );
+                      }}
+                      className="btn-primary px-3 py-2 text-xs"
+                    >
+                      {watchedRecord ? "Mark Rewatch" : "Mark as Watched"}
+                    </button>
+                    {watchedRecord && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!trackedTitle) return;
+                          removeWatched(trackedTitle.mediaType, trackedTitle.id);
+                          setActionMessage("Watched status removed.");
+                        }}
+                        className="btn-secondary px-3 py-2 text-xs"
+                      >
+                        Remove Watched
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!trackedTitle) return;
+                        const inWatchlist = toggleInWatchlist(trackedTitle);
+                        setActionMessage(inWatchlist ? "Added to watchlist." : "Removed from watchlist.");
+                      }}
+                      className="btn-secondary px-3 py-2 text-xs"
+                    >
+                      {watchlistRecord ? "Remove Watchlist" : "Add to Watchlist"}
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Rate</p>
+                    {[0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((value) => (
+                      <button
+                        key={`rating-${value}`}
+                        type="button"
+                        onClick={() => {
+                          if (!trackedTitle) return;
+                          setRating(trackedTitle.mediaType, trackedTitle.id, value);
+                          setActionMessage(`Rated ${value.toFixed(1)} stars.`);
+                        }}
+                        className={`rounded-full px-2 py-1 text-[11px] transition-all ${
+                          currentRating === value
+                            ? "bg-brand-500 text-white"
+                            : "bg-slate-900/70 text-slate-300 hover:bg-slate-800"
+                        }`}
+                      >
+                        {value.toFixed(1)}
+                      </button>
+                    ))}
+                    {currentRating !== undefined && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!trackedTitle) return;
+                          setRating(trackedTitle.mediaType, trackedTitle.id, null);
+                          setActionMessage("Rating removed.");
+                        }}
+                        className="rounded-full bg-slate-900/70 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={listId}
+                      onChange={(event) => setListId(event.target.value)}
+                      className="rounded-lg border border-slate-700/70 bg-slate-900/70 px-2.5 py-1.5 text-xs text-slate-200 outline-none"
+                    >
+                      <option value="">Select list...</option>
+                      {(store?.customLists ?? []).map((list) => (
+                        <option key={list.id} value={list.id}>
+                          {list.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={!listId}
+                      onClick={() => {
+                        if (!trackedTitle || !listId) return;
+                        addItemToList(listId, trackedTitle);
+                        setActionMessage("Added to list.");
+                      }}
+                      className="btn-secondary px-3 py-2 text-xs disabled:opacity-40"
+                    >
+                      Add to List
+                    </button>
+                    <input
+                      type="text"
+                      value={newListName}
+                      onChange={(event) => setNewListName(event.target.value)}
+                      placeholder="New list name"
+                      className="rounded-lg border border-slate-700/70 bg-slate-900/70 px-2.5 py-1.5 text-xs text-slate-200 placeholder:text-slate-500 outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!newListName.trim()) return;
+                        createList(newListName);
+                        setActionMessage(`Created list "${newListName.trim()}".`);
+                        setNewListName("");
+                      }}
+                      className="btn-secondary px-3 py-2 text-xs"
+                    >
+                      Create List
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap gap-3 text-xs text-slate-400">
+                    {watchedRecord && (
+                      <span>
+                        Watched {watchedRecord.watchHistory.length} time(s) • Rewatches: {watchedRecord.rewatchCount}
+                      </span>
+                    )}
+                    {currentRating !== undefined && <span>Your rating: {currentRating.toFixed(1)} / 5</span>}
+                  </div>
+                  {actionMessage && <p className="text-xs text-brand-500">{actionMessage}</p>}
+                </article>
+
                 <article className="surface-card space-y-2 p-4">
                   <p className="text-xs uppercase tracking-[0.13em] text-brand-500">Where to Watch</p>
                   {!data.watch.region ? (

@@ -17,6 +17,7 @@ type SourceMovie = {
   vote_average: number;
   vote_count: number;
   popularity: number;
+  original_language?: string;
   genre_ids?: number[];
   media_type?: MediaType;
 };
@@ -30,6 +31,8 @@ function mapMovie(movie: SourceMovie) {
     releaseYear: movie.release_date?.slice(0, 4) ?? "Unknown",
     voteAverage: movie.vote_average,
     voteCount: movie.vote_count,
+    popularity: movie.popularity,
+    originalLanguage: movie.original_language ?? null,
     genreIds: movie.genre_ids ?? []
   };
 }

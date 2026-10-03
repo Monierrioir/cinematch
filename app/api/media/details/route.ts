@@ -107,9 +107,12 @@ export async function GET(request: NextRequest) {
       posterPath: item.poster_path,
       backdropPath: item.backdrop_path,
       overview: item.overview,
+      releaseDate: item.release_date ?? "Unknown",
       year: (item.release_date ?? "Unknown").slice(0, 4),
       genres: (item.genres ?? []).map((genre) => genre.name),
+      genreIds: (item.genres ?? []).map((genre) => genre.id),
       rating: item.vote_average ?? 0,
+      popularity: item.popularity ?? 0,
       originalLanguage: (item.original_language ?? "unknown").toUpperCase(),
       runtimeText:
         mediaType === "movie"

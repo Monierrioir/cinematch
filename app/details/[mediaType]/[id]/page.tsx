@@ -1,8 +1,10 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import TrackActionsPanel from "@/components/TrackActionsPanel";
 import { getBackdropUrl, getPosterUrl } from "@/lib/image";
 import { selectBestYouTubeVideoKey } from "@/lib/media-video";
+import type { TrackableTitleInput } from "@/lib/personal-tracker";
 import { getMediaDetailsForView, type TmdbProvider } from "@/lib/tmdb";
 import { getBookInfoForMovie } from "@/services/books";
 import type { MediaType } from "@/lib/types";
@@ -92,6 +94,18 @@ export default async function DetailsPage({ params, searchParams }: DetailsPageP
   const streamingProviders = dedupeProviders(regionWatchData?.flatrate);
   const rentProviders = dedupeProviders(regionWatchData?.rent);
   const buyProviders = dedupeProviders(regionWatchData?.buy);
+  const trackableTitle: TrackableTitleInput = {
+    id: item.id,
+    mediaType,
+    title: item.title,
+    posterPath: item.poster_path,
+    genres: (item.genres ?? []).map((genre) => genre.name),
+    genreIds: (item.genres ?? []).map((genre) => genre.id),
+    releaseDate: item.release_date ?? "Unknown",
+    popularity: item.popularity ?? 0,
+    voteAverage: item.vote_average ?? 0,
+    originalLanguage: item.original_language ?? null
+  };
 
   return (
     <div className="space-y-8 md:space-y-10">
@@ -148,7 +162,8 @@ export default async function DetailsPage({ params, searchParams }: DetailsPageP
         </div>
       </section>
 
-      <section className="grid gap-5 md:grid-cols-2">
+      <section className="grid gap-5 md:grid-cols-3">
+        <TrackActionsPanel title={trackableTitle} />
         <article className="surface-card space-y-3 p-5">
           <p className="text-xs uppercase tracking-[0.14em] text-brand-500">Extra Details</p>
           <div className="space-y-2 text-sm text-slate-300">

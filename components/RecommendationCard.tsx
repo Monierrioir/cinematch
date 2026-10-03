@@ -18,11 +18,13 @@ export default function RecommendationCard({ movie, onViewDetails }: Recommendat
   const [shouldShowPreview, setShouldShowPreview] = useState(false);
   const [hasAttemptedPreview, setHasAttemptedPreview] = useState(false);
 
-  const whyBadge = movie.whyRecommended
-    .replace(/^This movie is recommended because\s*/i, "")
-    .replace(/\.$/, "")
-    .split(",")[0]
-    ?.trim();
+  const whyBadge =
+    movie.recommendationBadges?.[0] ??
+    movie.whyRecommended
+      .replace(/^This movie is recommended because\s*/i, "")
+      .replace(/\.$/, "")
+      .split(/[•,]/)[0]
+      ?.trim();
 
   const clearHoverTimer = () => {
     if (hoverTimeoutRef.current) {
@@ -88,6 +90,16 @@ export default function RecommendationCard({ movie, onViewDetails }: Recommendat
         <p className="featured-accent-text text-[11px] uppercase tracking-wide">
           Match score {movie.recommendationScore.toFixed(1)}
         </p>
+        <div className="flex flex-wrap gap-1">
+          {(movie.recommendationBadges ?? []).map((badge) => (
+            <span
+              key={`${movie.id}-${badge}`}
+              className="rounded-full border border-slate-600/70 bg-slate-800/70 px-2 py-0.5 text-[10px] uppercase tracking-[0.1em] text-slate-200"
+            >
+              {badge}
+            </span>
+          ))}
+        </div>
         <p className="line-clamp-2 text-xs text-slate-300">{movie.whyRecommended}</p>
 
         {shouldShowPreview && (

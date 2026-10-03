@@ -1,14 +1,8 @@
 import type { RecommendedMovie, SelectedMovie, TmdbMovie } from "@/lib/types";
+import { inferToneFromGenres, rankByTasteAndSimilarity, type SessionTasteProfile } from "@/lib/taste-profile";
 
-const toReleaseYear = (releaseDate?: string): string => {
-  if (!releaseDate) return "Unknown";
-  return releaseDate.split("-")[0] || "Unknown";
-};
-
-const EAST_ASIAN_LANGUAGES = new Set(["ja", "ko", "zh", "cn"]);
-const EAST_ASIAN_COUNTRIES = new Set(["JP", "KR", "CN", "TW", "HK"]);
-const BROAD_GENRE_IDS = new Set([14, 18, 35, 10751]);
 const ANIMATION_GENRE_ID = 16;
+const BROAD_GENRE_IDS = new Set([14, 18, 35, 10751]);
 const STOP_WORDS = new Set([
   "the",
   "and",
@@ -36,7 +30,7 @@ const STOP_WORDS = new Set([
   "over",
   "under"
 ]);
-const MOOD_TERMS = [
+const MOOD_TERMS = new Set([
   "nostalgic",
   "quiet",
   "gentle",
@@ -52,63 +46,23 @@ const MOOD_TERMS = [
   "atmospheric",
   "friendship",
   "intimate",
-  "tender"
-];
+  "tender",
+  "tense",
+  "dark",
+  "hopeful"
+]);
 
 const WEIGHTS = {
-  genreSimilarity: 0.3,
-  keywordThemeSimilarity: 0.24,
-  overviewTextSimilarity: 0.18,
-  languageStyleMatch: 0.14,
+  genreSimilarity: 0.26,
+  keywordThemeSimilarity: 0.19,
+  overviewTextSimilarity: 0.13,
   yearProximity: 0.1,
-  hiddenGemBonus: 0.04,
-  singleReferenceBoost: 0.12
+  languageMatch: 0.08,
+  countrySimilarity: 0.05,
+  audienceFit: 0.1,
+  voteConfidence: 0.05,
+  popularityLight: 0.04
 } as const;
-
-type SingleReferenceProfile = {
-  genreIds: Set<number>;
-  keywordSet: Set<string>;
-  moodSet: Set<string>;
-  overviewTokenSet: Set<string>;
-  language: string | null;
-  isAnimation: boolean;
-  isEastAsian: boolean;
-  year: number | null;
-};
-
-type TasteProfile = {
-  genreWeights: Map<number, number>;
-  dominantLanguage: string | null;
-  preferredCountries: Set<string>;
-  animationRatio: number;
-  prefersEastAsianAnimation: boolean;
-  avgYear: number | null;
-  avgPopularity: number;
-  keywordSet: Set<string>;
-  moodSet: Set<string>;
-  overviewTokenSet: Set<string>;
-  selectedCount: number;
-  singleReference: SingleReferenceProfile | null;
-};
-
-type FeatureBreakdown = {
-  genreSimilarity: number;
-  keywordThemeSimilarity: number;
-  overviewTextSimilarity: number;
-  languageStyleMatch: number;
-  formatMatch: number;
-  yearProximity: number;
-  hiddenGemBonus: number;
-  moodSimilarity: number;
-  singleReferenceMatch: number;
-  penalties: number;
-};
-
-type ScoredCandidate = {
-  movie: TmdbMovie;
-  finalScore: number;
-  breakdown: FeatureBreakdown;
-};
 
 export type UserProfileSignals = {
   preferredMediaType?: "movie" | "tv" | null;
@@ -116,7 +70,65 @@ export type UserProfileSignals = {
   preferredLanguage?: string | null;
 };
 
+type NormalizedSelectedItem = {
+  id: number;
+  title: string;
+  mediaType: "movie" | "tv";
+  genreIds: Set<number>;
+  year: number | null;
+  language: string | null;
+  countries: Set<string>;
+  tokens: Set<string>;
+  moodTokens: Set<string>;
+  isAdult: boolean;
+  isAnimation: boolean;
+};
+
+type RecommendationContext = {
+  mediaType: "movie" | "tv";
+  selected: NormalizedSelectedItem[];
+  selectedIds: Set<number>;
+  selectedGenreWeights: Map<number, number>;
+  selectedTokenSet: Set<string>;
+  selectedMoodSet: Set<string>;
+  avgYear: number | null;
+  avgPopularity: number;
+  dominantLanguage: string | null;
+  preferredCountries: Set<string>;
+  adultRatio: number;
+  animationRatio: number;
+  userProfileSignals?: UserProfileSignals;
+};
+
+type ScoreBreakdown = {
+  genreSimilarity: number;
+  yearProximity: number;
+  audienceFit: number;
+  voteConfidence: number;
+  popularityLight: number;
+  popularityPenalty: number;
+  languageMatch: number;
+  adultCompatibility: number;
+  keywordThemeSimilarity: number;
+  overviewTextSimilarity: number;
+  countrySimilarity: number;
+  totalBeforePenalty: number;
+  total: number;
+};
+
+type ScoredCandidate = {
+  movie: TmdbMovie;
+  finalScore: number;
+  breakdown: ScoreBreakdown;
+  badges: string[];
+};
+
 const clamp = (value: number, min = 0, max = 1) => Math.min(max, Math.max(min, value));
+
+const toReleaseYear = (releaseDate?: string): string => {
+  if (!releaseDate) return "Unknown";
+  return releaseDate.split("-")[0] || "Unknown";
+};
 
 const toNumberYear = (releaseDate?: string): number | null => {
   const year = Number(toReleaseYear(releaseDate));
@@ -132,102 +144,104 @@ function tokenize(text: string | undefined): string[] {
     .filter((word) => word.length >= 3 && !STOP_WORDS.has(word));
 }
 
-function isAnimation(movie: TmdbMovie): boolean {
-  const genreIds = movie.genre_ids ?? movie.genres?.map((genre) => genre.id) ?? [];
-  return genreIds.includes(ANIMATION_GENRE_ID);
-}
-
-function isEastAsianMovie(movie: TmdbMovie): boolean {
-  const language = movie.original_language?.toLowerCase() ?? "";
-  if (EAST_ASIAN_LANGUAGES.has(language)) return true;
-  const countries = movie.production_countries?.map((country) => country.iso_3166_1) ?? [];
-  return countries.some((country) => EAST_ASIAN_COUNTRIES.has(country));
-}
-
 function normalizeGenreIds(movie: TmdbMovie): number[] {
   return movie.genre_ids ?? movie.genres?.map((genre) => genre.id) ?? [];
 }
 
-function pickBecauseYouLikedTitle(candidate: TmdbMovie, selectedMoviesDetailed: TmdbMovie[]): string | undefined {
-  if (!selectedMoviesDetailed.length) return undefined;
-  const candidateGenres = new Set(normalizeGenreIds(candidate));
-  let bestTitle = selectedMoviesDetailed[0]?.title;
-  let bestScore = -1;
-
-  selectedMoviesDetailed.forEach((selected) => {
-    const selectedGenres = normalizeGenreIds(selected);
-    const overlap = selectedGenres.reduce(
-      (count, genreId) => (candidateGenres.has(genreId) ? count + 1 : count),
-      0
-    );
-    if (overlap > bestScore) {
-      bestScore = overlap;
-      bestTitle = selected.title;
-    }
-  });
-
-  return bestTitle;
+function isAnimation(movie: TmdbMovie): boolean {
+  return normalizeGenreIds(movie).includes(ANIMATION_GENRE_ID);
 }
 
-function buildTasteProfile(selectedMovies: TmdbMovie[]): TasteProfile {
+function overlapRatio(a: Set<string>, b: Set<string>): number {
+  if (!a.size || !b.size) return 0;
+  let overlap = 0;
+  a.forEach((token) => {
+    if (b.has(token)) overlap += 1;
+  });
+  return clamp(overlap / Math.max(1, Math.min(a.size, b.size)));
+}
+
+export function normalizeSelectedItem(
+  selectedMovie: SelectedMovie,
+  detailedMovie?: TmdbMovie
+): NormalizedSelectedItem {
+  const source = detailedMovie;
+  const genreIds = new Set<number>(source ? normalizeGenreIds(source) : selectedMovie.genreIds);
+  const language = source?.original_language?.toLowerCase() ?? null;
+  const countries = new Set(
+    source?.production_countries?.map((country) => country.iso_3166_1) ?? []
+  );
+  const tokens = new Set([
+    ...tokenize(source?.overview),
+    ...(source?.keywordNames ?? []).flatMap((keyword) => tokenize(keyword))
+  ]);
+  const moodTokens = new Set(Array.from(tokens).filter((token) => MOOD_TERMS.has(token)));
+
+  return {
+    id: selectedMovie.id,
+    title: selectedMovie.title,
+    mediaType: selectedMovie.mediaType,
+    genreIds,
+    year: toNumberYear(source?.release_date ?? selectedMovie.releaseYear),
+    language,
+    countries,
+    tokens,
+    moodTokens,
+    isAdult: Boolean(source?.adult),
+    isAnimation: source ? isAnimation(source) : selectedMovie.genreIds.includes(ANIMATION_GENRE_ID)
+  };
+}
+
+function buildRecommendationContext(
+  selectedMovies: SelectedMovie[],
+  selectedMoviesDetailed: TmdbMovie[],
+  userProfileSignals?: UserProfileSignals
+): RecommendationContext {
+  const selectedById = new Map(selectedMoviesDetailed.map((movie) => [movie.id, movie]));
+  const selected = selectedMovies.map((movie) => normalizeSelectedItem(movie, selectedById.get(movie.id)));
   const genreCounts = new Map<number, number>();
   const languageCounts = new Map<string, number>();
   const countryCounts = new Map<string, number>();
-  const keywordSet = new Set<string>();
-  const moodSet = new Set<string>();
-  const overviewTokenSet = new Set<string>();
-
-  let animationCount = 0;
-  let eastAsianAnimationCount = 0;
+  const selectedTokenSet = new Set<string>();
+  const selectedMoodSet = new Set<string>();
+  const selectedIds = new Set<number>();
   let yearTotal = 0;
   let yearCount = 0;
   let popularityTotal = 0;
+  let adultCount = 0;
+  let animationCount = 0;
 
-  selectedMovies.forEach((movie) => {
-    const genreIds = normalizeGenreIds(movie);
-    genreIds.forEach((genreId) => {
-      const broadMultiplier = BROAD_GENRE_IDS.has(genreId) ? 0.45 : 1;
+  selected.forEach((movie) => {
+    selectedIds.add(movie.id);
+    movie.genreIds.forEach((genreId) => {
+      const broadMultiplier = BROAD_GENRE_IDS.has(genreId) ? 0.5 : 1;
       genreCounts.set(genreId, (genreCounts.get(genreId) ?? 0) + broadMultiplier);
     });
-
-    const language = movie.original_language?.toLowerCase();
-    if (language) languageCounts.set(language, (languageCounts.get(language) ?? 0) + 1);
-
-    movie.production_countries?.forEach((country) => {
-      countryCounts.set(country.iso_3166_1, (countryCounts.get(country.iso_3166_1) ?? 0) + 1);
-    });
-
-    const tokens = new Set([
-      ...tokenize(movie.overview),
-      ...(movie.keywordNames ?? []).flatMap((keyword) => tokenize(keyword))
-    ]);
-    tokens.forEach((token) => {
-      keywordSet.add(token);
-      overviewTokenSet.add(token);
-      if (MOOD_TERMS.includes(token)) moodSet.add(token);
-    });
-
-    if (isAnimation(movie)) {
-      animationCount += 1;
-      if (isEastAsianMovie(movie)) eastAsianAnimationCount += 1;
-    }
-
-    const year = toNumberYear(movie.release_date);
-    if (year) {
-      yearTotal += year;
+    if (movie.language) languageCounts.set(movie.language, (languageCounts.get(movie.language) ?? 0) + 1);
+    movie.countries.forEach((country) =>
+      countryCounts.set(country, (countryCounts.get(country) ?? 0) + 1)
+    );
+    movie.tokens.forEach((token) => selectedTokenSet.add(token));
+    movie.moodTokens.forEach((token) => selectedMoodSet.add(token));
+    if (movie.year) {
+      yearTotal += movie.year;
       yearCount += 1;
     }
-
-    popularityTotal += movie.popularity || 0;
+    const detail = selectedById.get(movie.id);
+    popularityTotal += detail?.popularity ?? 0;
+    if (movie.isAdult) adultCount += 1;
+    if (movie.isAnimation) animationCount += 1;
   });
 
-  const totalGenreWeight = Array.from(genreCounts.values()).reduce((sum, count) => sum + count, 0) || 1;
-  const genreWeights = new Map(
+  const totalGenreWeight = Array.from(genreCounts.values()).reduce((sum, value) => sum + value, 0) || 1;
+  const selectedGenreWeights = new Map(
     Array.from(genreCounts.entries()).map(([genreId, count]) => [genreId, count / totalGenreWeight])
   );
 
   const dominantLanguage =
-    Array.from(languageCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    Array.from(languageCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ??
+    userProfileSignals?.preferredLanguage?.toLowerCase() ??
+    null;
   const preferredCountries = new Set(
     Array.from(countryCounts.entries())
       .sort((a, b) => b[1] - a[1])
@@ -235,261 +249,251 @@ function buildTasteProfile(selectedMovies: TmdbMovie[]): TasteProfile {
       .map(([country]) => country)
   );
 
-  const animationRatio = selectedMovies.length ? animationCount / selectedMovies.length : 0;
-  const eastAsianAnimationRatio = selectedMovies.length ? eastAsianAnimationCount / selectedMovies.length : 0;
-  const singleMovie = selectedMovies.length === 1 ? selectedMovies[0] : null;
-  const singleReference: SingleReferenceProfile | null = singleMovie
-    ? {
-        genreIds: new Set(normalizeGenreIds(singleMovie)),
-        keywordSet: new Set((singleMovie.keywordNames ?? []).flatMap((keyword) => tokenize(keyword))),
-        moodSet: new Set(tokenize(singleMovie.overview).filter((token) => MOOD_TERMS.includes(token))),
-        overviewTokenSet: new Set(tokenize(singleMovie.overview)),
-        language: singleMovie.original_language?.toLowerCase() ?? null,
-        isAnimation: isAnimation(singleMovie),
-        isEastAsian: isEastAsianMovie(singleMovie),
-        year: toNumberYear(singleMovie.release_date)
-      }
-    : null;
-
   return {
-    genreWeights,
+    mediaType: selectedMovies[0]?.mediaType ?? "movie",
+    selected,
+    selectedIds,
+    selectedGenreWeights,
+    selectedTokenSet,
+    selectedMoodSet,
+    avgYear: yearCount ? yearTotal / yearCount : null,
+    avgPopularity: selected.length ? popularityTotal / selected.length : 0,
     dominantLanguage,
     preferredCountries,
-    animationRatio,
-    prefersEastAsianAnimation: eastAsianAnimationRatio >= 0.5,
-    avgYear: yearCount ? yearTotal / yearCount : null,
-    avgPopularity: selectedMovies.length ? popularityTotal / selectedMovies.length : 0,
-    keywordSet,
-    moodSet,
-    overviewTokenSet,
-    selectedCount: selectedMovies.length,
-    singleReference
+    adultRatio: selected.length ? adultCount / selected.length : 0,
+    animationRatio: selected.length ? animationCount / selected.length : 0,
+    userProfileSignals
   };
 }
 
-function overlapRatio(candidate: Set<string>, profile: Set<string>): number {
-  if (!candidate.size || !profile.size) return 0;
-  let overlap = 0;
-  candidate.forEach((token) => {
-    if (profile.has(token)) overlap += 1;
-  });
-  return clamp(overlap / Math.max(1, Math.min(candidate.size, profile.size)));
+function getPopularityPenalty(popularity: number): number {
+  if (popularity <= 90) return 0;
+  return clamp(((popularity - 90) / 220) * 0.18, 0, 0.18);
 }
 
-function scoreCandidate(
+function getVoteConfidence(voteCount: number): number {
+  return clamp(Math.log10(Math.max(1, voteCount)) / 4);
+}
+
+function getAudienceFit(voteAverage: number, voteCount: number): number {
+  const normalizedVote = clamp(voteAverage / 10);
+  const confidence = getVoteConfidence(voteCount);
+  return clamp(normalizedVote * (0.68 + confidence * 0.32));
+}
+
+function getFranchiseKey(title: string): string {
+  const base = title
+    .toLowerCase()
+    .replace(/[:\-|].*$/, "")
+    .replace(/\b(part|chapter|episode|vol|volume|season)\b.*$/, "")
+    .replace(/\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/g, "")
+    .replace(/\d+/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .trim();
+  const tokens = base.split(/\s+/).filter(Boolean);
+  return tokens.slice(0, 2).join(" ");
+}
+
+function getSubPatternKey(movie: TmdbMovie): string {
+  const genres = normalizeGenreIds(movie).slice(0, 2).sort((a, b) => a - b).join("-");
+  const language = movie.original_language?.toLowerCase() ?? "xx";
+  const format = isAnimation(movie) ? "anim" : "live";
+  return `${genres}:${language}:${format}`;
+}
+
+export function computeSimilarityScore(
   candidate: TmdbMovie,
-  profile: TasteProfile
-): { total: number; breakdown: FeatureBreakdown } {
+  context: RecommendationContext
+): ScoreBreakdown {
+  const candidateGenreIds = normalizeGenreIds(candidate);
+  const candidateGenreSet = new Set(candidateGenreIds);
+  const candidateYear = toNumberYear(candidate.release_date);
+  const candidateLanguage = candidate.original_language?.toLowerCase() ?? null;
+  const candidateCountries = new Set(
+    candidate.production_countries?.map((country) => country.iso_3166_1) ?? []
+  );
   const candidateTokens = new Set([
     ...tokenize(candidate.overview),
     ...(candidate.keywordNames ?? []).flatMap((keyword) => tokenize(keyword))
   ]);
-  const candidateMoodTokens = new Set(Array.from(candidateTokens).filter((token) => MOOD_TERMS.includes(token)));
+  const candidateMoodTokens = new Set(Array.from(candidateTokens).filter((token) => MOOD_TERMS.has(token)));
 
-  const keywordSimilarity = overlapRatio(candidateTokens, profile.keywordSet);
-  const moodSimilarity = overlapRatio(candidateMoodTokens, profile.moodSet);
-  const overviewSimilarity = overlapRatio(candidateTokens, profile.overviewTokenSet);
-
-  const candidateAnimation = isAnimation(candidate);
-  const candidateEastAsian = isEastAsianMovie(candidate);
-  let formatMatch =
-    profile.animationRatio >= 0.65
-      ? candidateAnimation
-        ? 1
-        : 0.05
-      : profile.animationRatio <= 0.35
-        ? candidateAnimation
-          ? 0.45
-          : 1
-        : candidateAnimation
-          ? 0.85
-          : 0.75;
-
-  if (profile.prefersEastAsianAnimation && candidateAnimation && candidateEastAsian) {
-    formatMatch = clamp(formatMatch + 0.25);
-  }
-
-  const language = candidate.original_language?.toLowerCase() ?? "";
-  const languageScore = profile.dominantLanguage
-    ? language === profile.dominantLanguage
-      ? 1
-      : EAST_ASIAN_LANGUAGES.has(language) && EAST_ASIAN_LANGUAGES.has(profile.dominantLanguage)
-        ? 0.65
-        : 0.2
-    : 0.5;
-  const countryCodes = candidate.production_countries?.map((country) => country.iso_3166_1) ?? [];
-  const countryScore =
-    countryCodes.some((country) => profile.preferredCountries.has(country))
-      ? 1
-      : countryCodes.some((country) => EAST_ASIAN_COUNTRIES.has(country)) &&
-          Array.from(profile.preferredCountries).some((country) => EAST_ASIAN_COUNTRIES.has(country))
-        ? 0.7
-        : 0.25;
-  const languageStyleMatch = clamp(languageScore * 0.6 + countryScore * 0.4);
-
-  const genreIds = normalizeGenreIds(candidate);
-  const genreSimilarityRaw = Array.from(profile.genreWeights.entries()).reduce((score, [genreId, weight]) => {
-    if (genreIds.includes(genreId)) return score + weight;
-    return score;
-  }, 0);
-  const genreSimilarity = clamp(genreSimilarityRaw);
-
-  const candidateYear = toNumberYear(candidate.release_date);
+  const genreSimilarity = clamp(
+    Array.from(context.selectedGenreWeights.entries()).reduce((score, [genreId, weight]) => {
+      if (candidateGenreSet.has(genreId)) return score + weight;
+      return score;
+    }, 0)
+  );
   const yearProximity =
-    candidateYear && profile.avgYear
-      ? clamp(1 - Math.min(Math.abs(candidateYear - profile.avgYear), 30) / 30)
-      : 0.5;
-
-  const hiddenGemBase = clamp(1 - Math.min(candidate.popularity, 120) / 120);
-  const hiddenGemDistance = profile.avgPopularity
-    ? clamp(1 - Math.abs(candidate.popularity - profile.avgPopularity) / 100)
+    candidateYear && context.avgYear
+      ? clamp(1 - Math.min(Math.abs(candidateYear - context.avgYear), 28) / 28)
+      : 0.45;
+  const keywordThemeSimilarity = overlapRatio(candidateTokens, context.selectedTokenSet);
+  const moodSimilarity = overlapRatio(candidateMoodTokens, context.selectedMoodSet);
+  const overviewTextSimilarity = clamp(keywordThemeSimilarity * 0.72 + moodSimilarity * 0.28);
+  const languageMatch = context.dominantLanguage
+    ? candidateLanguage === context.dominantLanguage
+      ? 1
+      : 0.25
     : 0.5;
-  // Build a core relevance score first; hidden-gem is a small bonus gated by this relevance.
-  const styleMatch = clamp(languageStyleMatch * 0.82 + formatMatch * 0.18);
-  const coreRelevance =
+  const countrySimilarity =
+    context.preferredCountries.size > 0 &&
+    Array.from(candidateCountries).some((country) => context.preferredCountries.has(country))
+      ? 1
+      : 0.3;
+  const adultCompatibility =
+    context.adultRatio >= 0.5 ? (candidate.adult ? 1 : 0.35) : candidate.adult ? 0.25 : 1;
+
+  const voteConfidence = getVoteConfidence(candidate.vote_count ?? 0);
+  const audienceFit = getAudienceFit(candidate.vote_average ?? 0, candidate.vote_count ?? 0);
+  const popularityLight = clamp((candidate.popularity ?? 0) / 120);
+  const popularityPenalty = getPopularityPenalty(candidate.popularity ?? 0);
+  const hiddenGemLift = clamp(
+    ((1 - popularityLight) * 0.65 + audienceFit * 0.35) * (genreSimilarity * 0.7 + keywordThemeSimilarity * 0.3)
+  ) * 0.06;
+
+  const totalBeforePenalty =
     genreSimilarity * WEIGHTS.genreSimilarity +
-    keywordSimilarity * WEIGHTS.keywordThemeSimilarity +
-    overviewSimilarity * WEIGHTS.overviewTextSimilarity +
-    styleMatch * WEIGHTS.languageStyleMatch +
-    yearProximity * WEIGHTS.yearProximity;
-  const hiddenGemRaw = clamp(hiddenGemBase * 0.65 + hiddenGemDistance * 0.35);
-  const relevanceGate = clamp((coreRelevance - 0.2) / 0.8);
-  const hiddenGemBonus = clamp(hiddenGemRaw * relevanceGate);
-  let singleReferenceMatch = 0;
+    keywordThemeSimilarity * WEIGHTS.keywordThemeSimilarity +
+    overviewTextSimilarity * WEIGHTS.overviewTextSimilarity +
+    yearProximity * WEIGHTS.yearProximity +
+    languageMatch * WEIGHTS.languageMatch +
+    countrySimilarity * WEIGHTS.countrySimilarity +
+    audienceFit * WEIGHTS.audienceFit +
+    voteConfidence * WEIGHTS.voteConfidence +
+    popularityLight * WEIGHTS.popularityLight +
+    hiddenGemLift;
 
-  if (profile.singleReference) {
-    const candidateGenres = new Set(genreIds);
-    const refGenreOverlapCount = Array.from(profile.singleReference.genreIds).filter((id) =>
-      candidateGenres.has(id)
-    ).length;
-    const refGenreSimilarity = profile.singleReference.genreIds.size
-      ? clamp(refGenreOverlapCount / profile.singleReference.genreIds.size)
-      : 0;
-    const refKeywordSimilarity = overlapRatio(candidateTokens, profile.singleReference.keywordSet);
-    const refOverviewSimilarity = overlapRatio(candidateTokens, profile.singleReference.overviewTokenSet);
-    const refMoodSimilarity = overlapRatio(candidateMoodTokens, profile.singleReference.moodSet);
-    const refLanguageStyle =
-      profile.singleReference.language && language === profile.singleReference.language
-        ? 1
-        : profile.singleReference.language &&
-            EAST_ASIAN_LANGUAGES.has(profile.singleReference.language) &&
-            EAST_ASIAN_LANGUAGES.has(language)
-          ? 0.68
-          : 0.22;
-    const refFormat =
-      profile.singleReference.isAnimation === candidateAnimation
-        ? 1
-        : profile.singleReference.isAnimation
-          ? 0.05
-          : 0.4;
-    const refYearProximity =
-      profile.singleReference.year && candidateYear
-        ? clamp(1 - Math.min(Math.abs(candidateYear - profile.singleReference.year), 26) / 26)
-        : 0.5;
-    const eastAsianStyleBonus =
-      profile.singleReference.isAnimation && profile.singleReference.isEastAsian && candidateAnimation && candidateEastAsian
-        ? 0.08
-        : 0;
-
-    singleReferenceMatch = clamp(
-      refGenreSimilarity * 0.24 +
-        refKeywordSimilarity * 0.18 +
-        refOverviewSimilarity * 0.18 +
-        refMoodSimilarity * 0.12 +
-        refLanguageStyle * 0.14 +
-        refFormat * 0.1 +
-        refYearProximity * 0.04 +
-        eastAsianStyleBonus
-    );
-  }
-
-  let penalties = 0;
-  if (profile.animationRatio >= 0.7 && !candidateAnimation) penalties += 0.25;
-  if (profile.animationRatio <= 0.25 && candidateAnimation) penalties += 0.08;
-  if (keywordSimilarity < 0.16 && overviewSimilarity < 0.16 && genreSimilarity > 0.35) penalties += 0.14;
-  if (profile.prefersEastAsianAnimation && !(candidateAnimation && candidateEastAsian)) penalties += 0.12;
-  if (profile.dominantLanguage && languageScore <= 0.2 && genreSimilarity <= 0.28) penalties += 0.1;
-  if (moodSimilarity < 0.14 && overviewSimilarity < 0.2) penalties += 0.08;
-  if (profile.singleReference) {
-    if (singleReferenceMatch < 0.3) penalties += 0.16;
-    if (profile.singleReference.isAnimation && !candidateAnimation) penalties += 0.2;
-    if (
-      profile.singleReference.language &&
-      language !== profile.singleReference.language &&
-      profile.singleReference.isAnimation === candidateAnimation
-    ) {
-      penalties += 0.1;
-    }
-  }
-
-  const weightedScore =
-    coreRelevance +
-    hiddenGemBonus * WEIGHTS.hiddenGemBonus +
-    singleReferenceMatch * (profile.selectedCount === 1 ? WEIGHTS.singleReferenceBoost : 0);
-
+  const total = clamp(totalBeforePenalty * adultCompatibility - popularityPenalty);
   return {
-    total: clamp(weightedScore - penalties),
-    breakdown: {
-      genreSimilarity,
-      keywordThemeSimilarity: keywordSimilarity,
-      overviewTextSimilarity: overviewSimilarity,
-      languageStyleMatch: styleMatch,
-      formatMatch,
-      yearProximity,
-      hiddenGemBonus,
-      moodSimilarity,
-      singleReferenceMatch,
-      penalties
-    }
+    genreSimilarity,
+    yearProximity,
+    audienceFit,
+    voteConfidence,
+    popularityLight,
+    popularityPenalty,
+    languageMatch,
+    adultCompatibility,
+    keywordThemeSimilarity,
+    overviewTextSimilarity,
+    countrySimilarity,
+    totalBeforePenalty,
+    total
   };
 }
 
-function buildWhyRecommendedText(candidate: TmdbMovie, breakdown: FeatureBreakdown): string {
-  const reasons: string[] = [];
-
-  if (breakdown.keywordThemeSimilarity >= 0.45 || breakdown.overviewTextSimilarity >= 0.45) {
-    reasons.push("it closely matches your themes and narrative style");
-  }
-  if (breakdown.moodSimilarity >= 0.4) reasons.push("it reflects a similar emotional tone");
-  if (breakdown.formatMatch >= 0.75) {
-    reasons.push(
-      isAnimation(candidate)
-        ? "it aligns with your animation style preference"
-        : "its format matches the style you usually select"
-    );
-  }
-  if (breakdown.languageStyleMatch >= 0.65) {
-    reasons.push("its language and regional style are close to your taste");
-  }
-  if (breakdown.genreSimilarity >= 0.35) {
-    reasons.push("it shares your core genres without relying on broad overlap only");
-  }
-  if (breakdown.hiddenGemBonus >= 0.45) {
-    reasons.push("it has hidden-gem potential while staying relevant to your taste");
-  }
-  if (breakdown.singleReferenceMatch >= 0.52) {
-    reasons.push("it closely matches the tone and style of your selected film");
-  }
-
-  if (reasons.length === 0) {
-    reasons.push("it balances style similarity with hidden-gem potential better than generic genre-only matches");
-  }
-
-  return `This movie is recommended because ${reasons.slice(0, 3).join(", ")}.`;
+function isIrrelevantCandidate(candidate: TmdbMovie, breakdown: ScoreBreakdown): boolean {
+  if (breakdown.genreSimilarity < 0.14) return true;
+  if (breakdown.genreSimilarity < 0.2 && breakdown.keywordThemeSimilarity < 0.18) return true;
+  if (breakdown.yearProximity < 0.15 && breakdown.keywordThemeSimilarity < 0.26) return true;
+  if ((candidate.vote_average ?? 0) < 6 && (candidate.vote_count ?? 0) < 120) return true;
+  if (!candidate.poster_path && (candidate.vote_count ?? 0) < 90) return true;
+  if (!candidate.overview && (candidate.keywordNames?.length ?? 0) === 0) return true;
+  return false;
 }
 
-function sortScoredCandidatesByFinalScore(candidates: ScoredCandidate[]): ScoredCandidate[] {
-  // Always sort descending by finalScore so best recommendation is first.
+function getRecommendationBadges(candidate: TmdbMovie, breakdown: ScoreBreakdown): string[] {
+  const badges: string[] = [];
+  if (breakdown.total >= 0.72) badges.push("Close Match");
+  if (
+    (candidate.popularity ?? 0) < 36 &&
+    breakdown.total >= 0.58 &&
+    breakdown.audienceFit >= 0.62
+  ) {
+    badges.push("Hidden Gem");
+  }
+  if ((candidate.popularity ?? 0) >= 85 && breakdown.total >= 0.55) badges.push("Popular Pick");
+  if ((candidate.vote_average ?? 0) >= 7.6 && (candidate.vote_count ?? 0) >= 450) {
+    badges.push("Critically Strong");
+  }
+  return badges.slice(0, 2);
+}
+
+export function buildRecommendationExplanation(
+  candidate: TmdbMovie,
+  breakdown: ScoreBreakdown
+): string {
+  const reasons: string[] = [];
+  if (breakdown.genreSimilarity >= 0.42) reasons.push("Same core genre profile");
+  if (breakdown.keywordThemeSimilarity >= 0.42) reasons.push("Similar themes and narrative focus");
+  if (breakdown.overviewTextSimilarity >= 0.4) reasons.push("Comparable mood and tone");
+  if (breakdown.yearProximity >= 0.55) reasons.push("Close release era");
+  if (breakdown.languageMatch >= 0.8 || breakdown.countrySimilarity >= 0.8) {
+    reasons.push("Aligned language and audience style");
+  }
+  if ((candidate.popularity ?? 0) < 36 && breakdown.total >= 0.58) {
+    reasons.push("Less mainstream but highly aligned");
+  }
+  if (reasons.length === 0) reasons.push("Strong audience fit in a similar style");
+  return reasons.slice(0, 2).join(" • ");
+}
+
+function pickBecauseYouLikedTitle(
+  candidate: TmdbMovie,
+  selectedMoviesDetailed: TmdbMovie[]
+): string | undefined {
+  if (!selectedMoviesDetailed.length) return undefined;
+  const candidateTokens = new Set([
+    ...tokenize(candidate.overview),
+    ...(candidate.keywordNames ?? []).flatMap((keyword) => tokenize(keyword))
+  ]);
+  const candidateGenres = new Set(normalizeGenreIds(candidate));
+  let bestTitle = selectedMoviesDetailed[0]?.title;
+  let bestScore = -1;
+
+  selectedMoviesDetailed.forEach((selected) => {
+    const selectedTokens = new Set([
+      ...tokenize(selected.overview),
+      ...(selected.keywordNames ?? []).flatMap((keyword) => tokenize(keyword))
+    ]);
+    const selectedGenres = new Set(normalizeGenreIds(selected));
+    const genreOverlap = Array.from(selectedGenres).filter((genreId) =>
+      candidateGenres.has(genreId)
+    ).length;
+    const genreScore = selectedGenres.size ? genreOverlap / selectedGenres.size : 0;
+    const tokenScore = overlapRatio(candidateTokens, selectedTokens);
+    const score = genreScore * 0.65 + tokenScore * 0.35;
+    if (score > bestScore) {
+      bestScore = score;
+      bestTitle = selected.title;
+    }
+  });
+
+  return bestTitle;
+}
+
+function sortScoredCandidates(candidates: ScoredCandidate[]): ScoredCandidate[] {
   return candidates.slice().sort((a, b) => {
     if (b.finalScore !== a.finalScore) return b.finalScore - a.finalScore;
-    const aHasPoster = a.movie.poster_path ? 1 : 0;
     const bHasPoster = b.movie.poster_path ? 1 : 0;
+    const aHasPoster = a.movie.poster_path ? 1 : 0;
     if (bHasPoster !== aHasPoster) return bHasPoster - aHasPoster;
     if ((b.movie.vote_average ?? 0) !== (a.movie.vote_average ?? 0)) {
       return (b.movie.vote_average ?? 0) - (a.movie.vote_average ?? 0);
     }
-    return (b.movie.popularity ?? 0) - (a.movie.popularity ?? 0);
+    return (b.movie.vote_count ?? 0) - (a.movie.vote_count ?? 0);
   });
+}
+
+export function diversifyResults(candidates: ScoredCandidate[], limit: number): ScoredCandidate[] {
+  const selected: ScoredCandidate[] = [];
+  const franchiseCount = new Map<string, number>();
+  const patternCount = new Map<string, number>();
+
+  for (const candidate of candidates) {
+    if (selected.length >= limit) break;
+    const franchiseKey = getFranchiseKey(candidate.movie.title);
+    const patternKey = getSubPatternKey(candidate.movie);
+    const currentFranchise = franchiseCount.get(franchiseKey) ?? 0;
+    const currentPattern = patternCount.get(patternKey) ?? 0;
+    if (franchiseKey && currentFranchise >= 1) continue;
+    if (currentPattern >= 2) continue;
+    selected.push(candidate);
+    franchiseCount.set(franchiseKey, currentFranchise + 1);
+    patternCount.set(patternKey, currentPattern + 1);
+  }
+
+  return selected;
 }
 
 function logRecommendationRanking(candidates: ScoredCandidate[]): void {
@@ -506,54 +510,75 @@ export function buildRecommendations(
   genreMap: Map<number, string>,
   selectedMoviesDetailed: TmdbMovie[],
   userProfileSignals?: UserProfileSignals,
-  limit = 12
+  limit = 12,
+  sessionTasteProfile?: SessionTasteProfile | null
 ): RecommendedMovie[] {
-  const profile = buildTasteProfile(selectedMoviesDetailed);
-  const selectedIdSet = new Set(selectedMovies.map((movie) => movie.id));
+  const context = buildRecommendationContext(selectedMovies, selectedMoviesDetailed, userProfileSignals);
 
-  // Weighted recommendation model:
-  // - genre similarity: 24%
-  // - keyword/theme similarity: 20%
-  // - overview text similarity: 14%
-  // - language/style match (includes format): 14%
-  // - release-year proximity: 10%
-  // - hidden-gem bonus (relevance-gated): 4%
-  // Plus penalties for style mismatches.
   const scored = candidateMovies
-    .filter((movie) => !selectedIdSet.has(movie.id))
+    .filter((movie) => !context.selectedIds.has(movie.id))
     .map((movie) => {
-      const { total, breakdown } = scoreCandidate(movie, profile);
+      const breakdown = computeSimilarityScore(movie, context);
       const candidateGenreIds = normalizeGenreIds(movie);
       const favoriteGenreIds = userProfileSignals?.favoriteGenreIds ?? [];
-      const favoriteGenreOverlap =
+      const favoriteGenreBoost =
         favoriteGenreIds.length > 0
-          ? favoriteGenreIds.filter((genreId) => candidateGenreIds.includes(genreId)).length /
-            favoriteGenreIds.length
+          ? clamp(
+              favoriteGenreIds.filter((genreId) => candidateGenreIds.includes(genreId)).length /
+                favoriteGenreIds.length
+            ) * 0.04
           : 0;
-      const languageProfileBoost =
+      const languageBoost =
         userProfileSignals?.preferredLanguage &&
         movie.original_language?.toLowerCase() === userProfileSignals.preferredLanguage.toLowerCase()
-          ? 0.03
+          ? 0.02
           : 0;
-      const profileBoost = clamp(favoriteGenreOverlap * 0.04 + languageProfileBoost, 0, 0.08);
+      const finalScore = clamp(breakdown.total + favoriteGenreBoost + languageBoost);
 
       return {
         movie,
-        finalScore: clamp(total + profileBoost),
-        breakdown
+        finalScore,
+        breakdown,
+        badges: getRecommendationBadges(movie, breakdown)
       };
     })
-    .filter((item) => item.finalScore > 0.22);
+    .filter((item) => !isIrrelevantCandidate(item.movie, item.breakdown))
+    .filter((item) => item.finalScore >= 0.28);
 
-  const sortedScored = sortScoredCandidatesByFinalScore(scored)
-    .slice(0, limit);
+  const tasteBlended = rankByTasteAndSimilarity(
+    scored.map((item) => ({
+      candidateId: item.movie.id,
+      similarityScore: item.finalScore,
+      movie: {
+        mediaType: item.movie.media_type,
+        genreIds: normalizeGenreIds(item.movie),
+        releaseYear: toReleaseYear(item.movie.release_date),
+        voteAverage: item.movie.vote_average,
+        popularity: item.movie.popularity,
+        originalLanguage: item.movie.original_language ?? null,
+        toneHint: inferToneFromGenres(normalizeGenreIds(item.movie))
+      }
+    })),
+    sessionTasteProfile
+  );
 
-  logRecommendationRanking(sortedScored);
+  const blendedById = new Map<number, number>();
+  tasteBlended.forEach((item) => {
+    blendedById.set(item.candidateId, item.similarityScore);
+  });
+  const rescored = scored.map((item) => ({
+    ...item,
+    finalScore: blendedById.get(item.movie.id) ?? item.finalScore
+  }));
 
-  return sortedScored.map(({ movie, finalScore, breakdown }) => {
-    const genreIds = movie.genre_ids ?? movie.genres?.map((g) => g.id) ?? [];
+  const ranked = sortScoredCandidates(rescored);
+  const diversified = diversifyResults(ranked, limit);
+  logRecommendationRanking(diversified);
+
+  return diversified.map(({ movie, finalScore, breakdown, badges }) => {
+    const genreIds = normalizeGenreIds(movie);
     const genres = genreIds.map((id) => genreMap.get(id)).filter(Boolean) as string[];
-    const whyRecommended = buildWhyRecommendedText(movie, breakdown);
+    const whyRecommended = buildRecommendationExplanation(movie, breakdown);
     const becauseYouLikedTitle = pickBecauseYouLikedTitle(movie, selectedMoviesDetailed);
 
     return {
@@ -568,6 +593,7 @@ export function buildRecommendations(
       voteAverage: movie.vote_average,
       recommendationScore: Number((finalScore * 100).toFixed(2)),
       whyRecommended,
+      recommendationBadges: badges,
       becauseYouLikedTitle
     };
   });

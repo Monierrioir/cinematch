@@ -1,5 +1,5 @@
 import { compare } from "bcryptjs";
-import NextAuth from "next-auth";
+import type { NextAuthOptions } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import { z } from "zod";
 import { getPrismaClientSafe } from "@/lib/prisma";
@@ -9,7 +9,7 @@ const credentialsSchema = z.object({
   password: z.string().min(8)
 });
 
-export const { handlers, auth, signIn, signOut } = NextAuth({
+export const authOptions: NextAuthOptions = {
   session: { strategy: "jwt" },
   providers: [
     Credentials({
@@ -58,4 +58,4 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   pages: {
     signIn: "/auth"
   }
-});
+};

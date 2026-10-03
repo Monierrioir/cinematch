@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import RevealSection from "@/components/RevealSection";
 import { getPosterUrl } from "@/lib/image";
-import { CINEMATCH_SELECTED_MOVIES_KEY } from "@/lib/storage";
+import { CINEMATCH_SELECTED_MOVIES_KEY, trackTasteProfileEvent } from "@/lib/storage";
+import { inferToneFromGenres } from "@/lib/taste-profile";
 import type { MediaType, SelectedMovie } from "@/lib/types";
 
 const MIN_SELECTIONS = 1;
@@ -18,6 +19,8 @@ type SelectableMovie = {
   posterPath: string | null;
   releaseYear: string;
   voteAverage: number;
+  popularity?: number;
+  originalLanguage?: string | null;
   genreIds: number[];
 };
 
@@ -28,6 +31,8 @@ type SearchMovie = {
   posterPath: string | null;
   releaseDate?: string;
   voteAverage?: number;
+  popularity?: number;
+  originalLanguage?: string | null;
   genreIds: number[];
 };
 
@@ -42,6 +47,8 @@ function toSelectableMovie(movie: SearchMovie, fallbackMediaType: MediaType): Se
     posterPath: movie.posterPath ?? null,
     releaseYear: movie.releaseDate?.slice(0, 4) ?? "Unknown",
     voteAverage: typeof movie.voteAverage === "number" ? movie.voteAverage : 0,
+    popularity: typeof movie.popularity === "number" ? movie.popularity : undefined,
+    originalLanguage: movie.originalLanguage ?? null,
     genreIds: movie.genreIds ?? []
   };
 }
@@ -239,6 +246,16 @@ export default function RecommendPage() {
         return current.map((item) => (item.id === movie.id ? { ...item, reaction } : item));
       }
       if (current.length >= MAX_SELECTIONS) return current;
+      trackTasteProfileEvent({
+        type: reaction === "love" ? "love" : reaction === "like" ? "like" : "select",
+        mediaType: movie.mediaType,
+        genreIds: movie.genreIds,
+        releaseYear: movie.releaseYear,
+        voteAverage: movie.voteAverage,
+        popularity: movie.popularity,
+        originalLanguage: movie.originalLanguage ?? null,
+        toneHint: inferToneFromGenres(movie.genreIds)
+      });
       return [
         ...current,
         {
@@ -259,6 +276,16 @@ export default function RecommendPage() {
       const exists = current.some((item) => item.id === movie.id);
       if (exists) return current.filter((item) => item.id !== movie.id);
       if (current.length >= MAX_SELECTIONS) return current;
+      trackTasteProfileEvent({
+        type: "select",
+        mediaType: movie.mediaType,
+        genreIds: movie.genreIds,
+        releaseYear: movie.releaseYear,
+        voteAverage: movie.voteAverage,
+        popularity: movie.popularity,
+        originalLanguage: movie.originalLanguage ?? null,
+        toneHint: inferToneFromGenres(movie.genreIds)
+      });
       return [
         ...current,
         {
@@ -276,7 +303,17 @@ export default function RecommendPage() {
 
   const setReaction = (movieId: number, reaction: Reaction) => {
     setSelectedMovies((current) =>
-      current.map((movie) => (movie.id === movieId ? { ...movie, reaction } : movie))
+      current.map((movie) => {
+        if (movie.id !== movieId) return movie;
+        trackTasteProfileEvent({
+          type: reaction === "love" ? "love" : reaction === "dislike" ? "dislike" : "like",
+          mediaType: movie.mediaType,
+          genreIds: movie.genreIds,
+          releaseYear: movie.releaseYear,
+          toneHint: inferToneFromGenres(movie.genreIds)
+        });
+        return { ...movie, reaction };
+      })
     );
   };
 
@@ -310,6 +347,15 @@ export default function RecommendPage() {
     try {
       setIsSubmitting(true);
       setError(null);
+      if (selectedMovies[0]) {
+        trackTasteProfileEvent({
+          type: "request",
+          mediaType: selectedMovies[0].mediaType,
+          genreIds: selectedMovies.flatMap((movie) => movie.genreIds).slice(0, 8),
+          releaseYear: selectedMovies[0].releaseYear,
+          toneHint: inferToneFromGenres(selectedMovies[0].genreIds)
+        });
+      }
       localStorage.setItem(CINEMATCH_SELECTED_MOVIES_KEY, JSON.stringify(selectedMovies));
       router.push("/recommendations");
     } catch (submitError) {
